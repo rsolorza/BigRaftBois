@@ -14,7 +14,7 @@ const (
 	maxTimeOut 			int = 300 //max timeout for trying to become leader
 	voteTimeOut 		int64 = 100 //timeout for waiting for requested votes
 	voteSentTimeOut int64 = 250 //timeout waiting for vote to result in leader
-	termDuration 		int64 = 500 //duration of term for leader for debugging
+	termDuration 		int64 = 2000 //duration of term for leader for debugging
 	leaderTimeOut 	int64 = 150 //timeout for needed hb's from leader to follower
 
 	//types of messages
@@ -51,17 +51,19 @@ func ElectLeader(peers []chan Message, id int, persister *Persister) bool {
 			needed := numNodes / 2 + 1 //majority
 			needed-- //vote for self
 			voteStart := time.Now()
-			for needed != 0 && time.Since(voteStart).Milliseconds() < voteTimeOut {
+			for time.Since(voteStart).Milliseconds() < voteTimeOut {
 				select {
 					case message := <- peers[id]:
 						if message.messageType == ACK {
 							needed--
+						} else if message.messageType == HB{ //another leader was already elected so can't be elected
+							needed = numNodes
 						}
 					default:
 						time.Sleep(10 * 1e6)
 				}
 			}
-			if needed == 0 { //elected
+			if needed <= 0 { //elected
 				leaderSearching = false
 				isLeader = true
 			} else { //not elected
@@ -191,5 +193,5 @@ func main() {
 		time.Sleep(1e9)
 	}
 	*/
-	time.Sleep(10e9)
+	time.Sleep(20e9)
 }
