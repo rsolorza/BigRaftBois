@@ -123,14 +123,14 @@ func (ps *Persister) UpdateLeaderLogCommits(me *Leader, id int) {
     }
 
     // Go through and check each index of committed logs
-    for i := prevLastCommitted + 1; i < len(ps.logs) && prevLastCommitted == newLastCommitted; i++ {
+    for i := prevLastCommitted; i < len(ps.logs) && prevLastCommitted == newLastCommitted; i++ {
         majorityCommitted := false
         commitCounter := 0
 
         for j := 0; j < numNodes && !majorityCommitted; j++ {
             nodeLogIndex := me.nextIndex[j]
 
-            if nodeLogIndex >= i {
+            if nodeLogIndex - 1 >= i {
                 commitCounter++
             }
 

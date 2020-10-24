@@ -26,6 +26,7 @@ const (
     LEADER_LOG          int = 4 //client send log to leader
     LOG                 int = 5 //leader sending out log to commit
     LOG_ACK             int = 6 //follower ack'ing commit to log
+    OUT_OF_SYNC         int = 7 //follower telling leader they are out of sync
 )
 
 type Message struct {
@@ -128,6 +129,9 @@ func RunLeader(peers []chan Message, applyChan chan Message, id int, ps *Persist
                         case LEADER_LOG:
                             message.newLog.term = term
                             ps.FollowerRecieveLog(me, message.newLog, ps.logs[message.newLog.idx - 1])
+                        case OUT_OF_SYNC:
+                            leader.nextIndex[message.sender]--
+                            leader.matchIndex[message.sender]--
                     }
 
                 default:
@@ -157,6 +161,8 @@ func RunFollower(peers []chan Message, id int, ps *Persister, me *Follower) {
                         added := ps.FollowerRecieveLog(me, message.newLog, message.prevLog)
                         if added {
                             peers[message.sender] <- Message{LOG_ACK, id, message.newLog, message.prevLog}
+                        } else {
+                            peers[message.sender] <- Message{OUT_OF_SYNC, id, Log{}, Log{}}
                         }
                 }
 
@@ -241,7 +247,6 @@ func main() {
     }
     
     peers[leader] <- Message{LEADER_LOG, -1, logs[0], Log{0, 0, true, StateMachine{0,0,0}}}
-
 
     for i := 1; i < len(logs); i++ {
         leader := -1
