@@ -1,5 +1,10 @@
 package main
 
+import (
+    "fmt"
+    "sync"
+)
+
 type Log struct {
     term      int
     idx       int
@@ -38,7 +43,7 @@ func (ps *Persister) MakeLeader(me *Follower, id int) *Leader {
     leader.nextIndex = make([]int, numNodes)
     leader.matchIndex = make([]int, numNodes)
 
-    for i := 0; i < id; i++ {
+    for i := 0; i < numNodes; i++ {
         if i != id {
             leader.nextIndex[i] = me.commitIndex + 1
             leader.matchIndex[i] = 0
@@ -59,7 +64,7 @@ func (ps *Persister) MakeFollower() *Follower {
         return &Follower{0, 0}
     }
 
-    for i := len(ps.logs); i > 0; i-- {
+    for i := len(ps.logs)-1; i >= 0; i-- {
         if (ps.logs[i].committed) {
             return &Follower{i, len(ps.logs)}
         }
@@ -71,7 +76,7 @@ func (ps *Persister) MakeFollower() *Follower {
 // returns true if able to add to log, false otherwise
 // What happens is recieve dup?
 func (ps *Persister) FollowerRecieveLog(me *Follower, log Log, prev Log) bool {
-    if prev.idx == ps.logs[me.lastApplied].idx && prev.term == ps.logs[me.lastApplied].idx {
+    if prev.idx == ps.logs[me.lastApplied].idx && prev.term == ps.logs[me.lastApplied].term {
         ps.logs = append(ps.logs, log)
         ps.logs[me.lastApplied].committed = true
         
@@ -91,7 +96,9 @@ func (ps *Persister) FollowerRecieveLog(me *Follower, log Log, prev Log) bool {
 // Assumes new log to be sent has been added, but not committed locally
 func (ps *Persister) SendLogs(me *Leader, peers []chan Message, id int) {
     for i := 0; i < numNodes; i++ {
-        if (i != id) {
+        logIdx := me.nextIndex[i]
+
+        if (i != id && logIdx < len(ps.logs)) {
             logIdx := me.nextIndex[i]
 
             peers[i] <- Message{LOG, id, ps.logs[logIdx], ps.logs[logIdx - 1]}
@@ -108,7 +115,7 @@ func (ps *Persister) UpdateLeaderLogCommits(me *Leader, id int) {
     prevLastCommitted := -1
     newLastCommitted := -1
 
-    for i := len(ps.logs); i >= 0 && prevLastCommitted < 0; i-- {
+    for i := len(ps.logs) - 1; i >= 0 && prevLastCommitted < 0; i-- {
         if ps.logs[i].committed {
             prevLastCommitted = i
             newLastCommitted = i
@@ -116,7 +123,7 @@ func (ps *Persister) UpdateLeaderLogCommits(me *Leader, id int) {
     }
 
     // Go through and check each index of committed logs
-    for i := lastCommitted + 1; i < len(ps.logs) && prevLastCommitted == newLastCommitted; i++ {
+    for i := prevLastCommitted + 1; i < len(ps.logs) && prevLastCommitted == newLastCommitted; i++ {
         majorityCommitted := false
         commitCounter := 0
 
@@ -139,4 +146,21 @@ func (ps *Persister) UpdateLeaderLogCommits(me *Leader, id int) {
     for i := prevLastCommitted; i <= newLastCommitted; i++ {
         ps.logs[i].committed = true
     }
+}
+
+func MakeLog(term int, logIdx int, state StateMachine) Log {
+    return Log{term, logIdx, false, state}
+}
+
+func (ps *Persister) PrintLogs(mu sync.Mutex, id int) {
+    mu.Lock()
+    defer mu.Unlock()
+
+    fmt.Printf("Node %d logs after election:\n", id)
+
+    for _, log := range ps.logs {
+        fmt.Printf("|t:%d,i:%d,c:%t|", log.term, log.idx, log.committed)
+    }
+
+    fmt.Println("\n");
 }

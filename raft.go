@@ -3,6 +3,7 @@ package main
 import (
     "fmt"
     "math/rand"
+    "sync"
     "time"
 )
 
@@ -22,8 +23,9 @@ const (
     ACK                 int = 1 //ack for vote
     HB                  int = 2 //heartbeat of the leader
     LEADER              int = 3 //request to see if leader
-    LOG                 int = 4 //leader sending out log to commit
-    LOG_ACK             int = 5 //follower ack'ing commit to log
+    LEADER_LOG          int = 4 //client send log to leader
+    LOG                 int = 5 //leader sending out log to commit
+    LOG_ACK             int = 6 //follower ack'ing commit to log
 )
 
 type Message struct {
@@ -105,8 +107,10 @@ func ElectLeader(peers []chan Message, id int, persister *Persister) bool {
     return isLeader
 }
 
-func RunLeader(peers []chan Message, id int, persister *Persister, applyChan chan Message) {
+func RunLeader(peers []chan Message, applyChan chan Message, id int, ps *Persister, me *Follower, term int) {
     termStart := time.Now()
+    leader := ps.MakeLeader(me, id)
+
     for time.Since(termStart).Milliseconds() < termDuration {
         for i := 0; i < numNodes; i++ {
             if i != id {
@@ -118,13 +122,21 @@ func RunLeader(peers []chan Message, id int, persister *Persister, applyChan cha
         for !chanIsEmpty {
             select {
                 case message := <- peers[id]:
-                    if message.messageType == LEADER {
-                        applyChan <- Message{ACK, id, Log{}, Log{}}
+                    switch message.messageType {
+                        case LEADER: applyChan <- Message{ACK, id, Log{}, Log{}}
+                        case LOG_ACK: ps.LeaderRecieveLogAck(leader, message)
+                        case LEADER_LOG:
+                            message.newLog.term = term
+                            ps.FollowerRecieveLog(me, message.newLog, ps.logs[message.newLog.idx - 1])
                     }
+
                 default:
                     chanIsEmpty = true
             }
         }
+
+        ps.SendLogs(leader, peers, id)
+        ps.UpdateLeaderLogCommits(leader, id)
         time.Sleep(1e6 * 100)
     }
 
@@ -132,39 +144,47 @@ func RunLeader(peers []chan Message, id int, persister *Persister, applyChan cha
 }
 
 
-func RunFollower(peers []chan Message, id int, persister *Persister) {
+func RunFollower(peers []chan Message, id int, ps *Persister, me *Follower) {
     lastHB := time.Now()
     timeOut := int64(rand.Intn(maxTimeOut- minTimeOut) + minTimeOut)
     
     for time.Since(lastHB).Milliseconds() < timeOut {
         select {
             case message := <- peers[id]:
-                if message.messageType == HB {
-                    lastHB = time.Now()
+                switch message.messageType {
+                    case HB: lastHB = time.Now()
+                    case LOG: 
+                        added := ps.FollowerRecieveLog(me, message.newLog, message.prevLog)
+                        if added {
+                            peers[message.sender] <- Message{LOG_ACK, id, message.newLog, message.prevLog}
+                        }
                 }
+
             default:
                 time.Sleep(10 * 1e6)
         }
     }
 }
 
-func RaftNode(peers []chan Message, id int, persister *Persister, applyChan chan Message) {
+func RaftNode(peers []chan Message, id int, ps *Persister, applyChan chan Message, mu sync.Mutex) {
     term := 0
+    me := ps.MakeFollower()
     
     //loop for terms
     for term < 10 {
-        isLeader := ElectLeader(peers, id, persister)
+        isLeader := ElectLeader(peers, id, ps)
         
         if isLeader {
             fmt.Print("term ")
             fmt.Println(term)
             fmt.Println(id)
-            RunLeader(peers, id, persister, applyChan)
+            RunLeader(peers, applyChan, id, ps, me, term)
         } else {
-            RunFollower(peers, id, persister)
+            RunFollower(peers, id, ps, me)
         }
         
         term++
+        ps.PrintLogs(mu, id)
     }
     
 }
@@ -197,22 +217,42 @@ func main() {
     
     peers := make([]chan Message, numNodes)
     applyChan := make(chan Message, maxChanBuff)
+    logs := make([]Log, 10)
+    var printLock sync.Mutex
     
     for i := 0; i < numNodes; i++ {
         peers[i] = make(chan Message, maxChanBuff)
     }
 
+    for i := 0; i < len(logs); i++ {
+        logs[i] = MakeLog(-1, i+1, StateMachine{0, -1 * i, 2*i})
+    }
+
     for i := 0; i < numNodes; i++ {
         persister := MakePersister()
-        go RaftNode(peers, i, persister, applyChan)
+        go RaftNode(peers, i, persister, applyChan, printLock)
+    }
+
+    time.Sleep(1e9)
+    
+    leader := -1
+    for leader == -1 {
+        leader = GetCurrentLeader(peers, applyChan)
     }
     
-    /*
-    // test for get current leader functionality
-    time.Sleep(5e9)
-    fmt.Print("Current Leader: ")
-    fmt.Println(GetCurrentLeader(peers, applyChan))
-    */
+    peers[leader] <- Message{LEADER_LOG, -1, logs[0], Log{0, 0, true, StateMachine{0,0,0}}}
+
+
+    for i := 1; i < len(logs); i++ {
+        leader := -1
+        for leader == -1 {
+            leader = GetCurrentLeader(peers, applyChan)
+        }
+
+        peers[leader] <- Message{LEADER_LOG, -1, logs[i], logs[i-1]}
+
+        time.Sleep(1.5e9)
+    }
     
-    time.Sleep(30e9)
+    time.Sleep(10e9)
 }
